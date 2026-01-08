@@ -18,19 +18,21 @@ const LIVEKIT_URL = "wss://real-time-translation-0uoocd93.livekit.cloud";
 
 function ActiveRoom({ onLeave }: { onLeave: () => void }) {
   const room = useRoomContext();
-  
-  // 1. Get Mic Status to auto-pause AI
-  const { localParticipant, isMicrophoneEnabled } = useLocalParticipant();
+  const { localParticipant } = useLocalParticipant();
 
-  // Language States
+  // 1. Language States
   const [myLang, setMyLang] = useState("");
   const [targetLang, setTargetLang] = useState("ja");
 
-  // Master "AI ON/OFF" Switch (User preference)
+  // 2. STT Active State
   const [isSttOn, setIsSttOn] = useState(false);
 
-  const { translator, initTranslator, status, resetTranslator } = useChromeTranslator();
+  // 3. Get resetTranslator from hook
+  const { translator, initTranslator, status, resetTranslator } =
+    useChromeTranslator();
 
+  // 4. FIXED: Only reset when targetLang actually changes
+  // We removed 'resetTranslator' from the dependency array to prevent the "Death Loop"
   useEffect(() => {
     if (status === "ready") {
       resetTranslator();
@@ -38,18 +40,10 @@ function ActiveRoom({ onLeave }: { onLeave: () => void }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [targetLang]);
 
-  // 2. LOGIC: Only listen if "AI is On" AND "Mic is Unmuted"
-  const shouldActuallyListen = isSttOn && isMicrophoneEnabled;
-
-  // 3. Destructure the local text from the hook
-  const { localTranscript } = useSpeechToText(
-    room, 
-    localParticipant, 
-    shouldActuallyListen, // Use the smart check here
-    myLang
-  );
+  useSpeechToText(room, localParticipant, isSttOn, myLang);
 
   const handleInit = () => {
+    // Logic: If target is JA, source is EN. If target is EN, source is JA.
     const source = targetLang === "ja" ? "en" : "ja";
     const target = targetLang;
     initTranslator(source, target);
@@ -70,11 +64,11 @@ function ActiveRoom({ onLeave }: { onLeave: () => void }) {
 
       <div className="flex-1 relative overflow-hidden flex flex-col">
         <Stage />
-         
+        {/* Pass the status directly so Captions knows when to translate */}
         <Captions
           translator={translator}
           isReady={status === "ready"}
-          localTranscript={localTranscript} // ✅ Now this variable exists!
+          localTranscript={localTranscript} // <--- Pass it here!
         />
       </div>
 

@@ -1,25 +1,33 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { Room, LocalParticipant } from 'livekit-client';
 import { Track } from 'livekit-client';
 
-// ⚠️ REPLACE THIS WITH YOUR REAL KEY (The one that worked in the HTML file)
+// ⚠️ REPLACE THIS WITH YOUR REAL KEY
 const DEEPGRAM_API_KEY = "19b2a3f9d9be5a9092dff1810650198119a5d76b"; 
 
 export const useSpeechToText = (
   room: Room | undefined,
   localParticipant: LocalParticipant | undefined,
-  shouldListen: boolean, // Controlled by your button
-  langCode: string       // 'en-US' or 'ja-JP'
+  shouldListen: boolean,
+  langCode: string
 ) => {
+  // 1. STATE: Holds the "gray" interim text for your screen
+  const [localTranscript, setLocalTranscript] = useState("");
+  
+  // Ref to track if we should really be listening (avoids closure staleness)
   const isListeningRef = useRef(shouldListen);
+  
+  // Ref to hold the current interim text (needed for UtteranceEnd logic)
+  const currentDraftRef = useRef(""); 
 
-  // Sync ref with state to prevent stale closures inside callbacks
   useEffect(() => {
     isListeningRef.current = shouldListen;
+    // If we stop listening, clear any leftover local text
+    if (!shouldListen) setLocalTranscript("");
   }, [shouldListen]);
 
-  useEffect(() => {
-    // 1. Safety Checks
+  useEffect(() => {    
+    // Safety Checks
     if (!shouldListen) return;
     if (!localParticipant) {
       console.log("⚠️ STT: Waiting for LocalParticipant...");
@@ -33,34 +41,44 @@ export const useSpeechToText = (
 
     const startStreaming = async () => {
       try {
-        // 2. Get the Microphone Track from LiveKit
         const microphonePub = localParticipant.getTrackPublication(Track.Source.Microphone);
         const audioTrack = microphonePub?.track?.mediaStreamTrack;
 
         if (!audioTrack) {
-          console.error("❌ STT: No Microphone Track found. Please unmute or check permissions.");
+          console.error("❌ STT: No Microphone Track found. Please unmute.");
           return;
         }
 
-        // 3. Construct the Deepgram URL (Exactly like your working HTML file)
+        // 2. CONFIGURATION: Nova-3 + Hybrid Strategy Params
         const baseUrl = 'wss://api.deepgram.com/v1/listen';
         const params = new URLSearchParams({
-          model: 'nova-2',
+          model: 'nova-3',
           language: langCode.startsWith('ja') ? 'ja' : 'en',
           smart_format: 'true',
-          interim_results: 'true',
+          interim_results: 'true',   // Fast updates
+          utterance_end_ms: '1000',  // Force finalize if silence > 1s
+          vad_events: 'true'         // Voice Activity Detection
         });
 
         const url = `${baseUrl}?${params.toString()}`;
 
-        // 4. Connect using Native WebSocket
-        // We use the ['token', KEY] subprotocol which worked in your test
         socket = new WebSocket(url, ['token', DEEPGRAM_API_KEY]);
+
+        // Helper to publish text to LiveKit
+        const publishToRoom = (text: string) => {
+            if (!isListeningRef.current) return;
+            console.log(`📤 STT Final: "${text}"`);
+            
+            const payload = new TextEncoder().encode(JSON.stringify({
+              text: text,
+              srcLang: langCode.startsWith('ja') ? 'ja' : 'en'
+            }));
+            
+            localParticipant.publishData(payload, { reliable: true });
+        };
 
         socket.onopen = () => {
           console.log("✅ STT: WebSocket Connected!");
-          
-          // Start Recording only AFTER socket is open
           const stream = new MediaStream([audioTrack]);
           recorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
 
@@ -70,30 +88,38 @@ export const useSpeechToText = (
             }
           });
 
-          // Send chunks every 250ms (Low latency)
-          recorder.start(250);
+          recorder.start(250); // Smaller chunks for lower latency
         };
 
         socket.onmessage = (event) => {
           try {
             const data = JSON.parse(event.data);
+
+            // A. Handle "UtteranceEnd" (User paused for 1s)
+            // If we have hanging text that wasn't marked final, send it now.
+            if (data.type === 'UtteranceEnd') {
+                if (currentDraftRef.current) {
+                    publishToRoom(currentDraftRef.current);
+                    setLocalTranscript(""); // Clear local view
+                    currentDraftRef.current = "";
+                }
+                return;
+            }
+
             const transcript = data.channel?.alternatives?.[0]?.transcript;
             const isFinal = data.is_final;
 
-            // Only log if there is actual text
             if (transcript) {
-              // console.log(`🎤 Heard: ${transcript}`); 
-              
-              // Publish to LiveKit only if it's a FINAL result
-              if (isFinal && isListeningRef.current) {
-                console.log(`📤 STT Final: "${transcript}"`);
-                
-                const payload = new TextEncoder().encode(JSON.stringify({
-                  text: transcript,
-                  srcLang: langCode.startsWith('ja') ? 'ja' : 'en'
-                }));
-                
-                localParticipant.publishData(payload, { reliable: true });
+              // B. INTERIM RESULT (Gray Text)
+              if (!isFinal) {
+                setLocalTranscript(transcript);
+                currentDraftRef.current = transcript;
+              } 
+              // C. FINAL RESULT (Black Text -> Send to Room)
+              else {
+                publishToRoom(transcript);
+                setLocalTranscript(""); // Clear local view immediately
+                currentDraftRef.current = "";
               }
             }
           } catch (err) {
@@ -102,15 +128,7 @@ export const useSpeechToText = (
         };
 
         socket.onclose = (event) => {
-          if (event.code !== 1000) {
-            console.warn(`🔌 STT: Connection closed unexpectedly (Code: ${event.code})`);
-          } else {
-            console.log("🔌 STT: Connection closed normally");
-          }
-        };
-
-        socket.onerror = (error) => {
-          console.error("❌ STT: Socket Error", error);
+            if (event.code !== 1000) console.warn(`🔌 STT Closed: ${event.code}`);
         };
 
       } catch (error) {
@@ -120,17 +138,14 @@ export const useSpeechToText = (
 
     startStreaming();
 
-    // 5. Cleanup Function
-    // This runs automatically when you toggle the button OFF or leave the page
     return () => {
       console.log("🛑 STT: Cleaning up...");
-      if (recorder && recorder.state !== 'inactive') {
-        recorder.stop();
-      }
-      if (socket) {
-        // Force close immediately
-        socket.close();
-      }
+      if (recorder && recorder.state !== 'inactive') recorder.stop();
+      if (socket) socket.close();
+      setLocalTranscript(""); // Reset UI on cleanup
     };
   }, [shouldListen, langCode, localParticipant]);
+
+  // 3. RETURN: Pass the local text back to the UI
+  return { localTranscript };
 };
