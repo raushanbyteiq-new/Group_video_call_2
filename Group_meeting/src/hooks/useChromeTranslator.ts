@@ -1,4 +1,5 @@
-import { useState, useCallback, useEffect } from 'react';
+// import { Columns } from 'lucide-react';
+import { useState, useCallback} from 'react';
 
 export const useChromeTranslator = () => {
   const [translator, setTranslator] = useState<any>(null);
@@ -52,6 +53,44 @@ export const useChromeTranslator = () => {
     }
   }, [getTranslatorAPI, translator]); 
 
+
+ const translateText = async (text: string): Promise<string> => {
+  if (!translator) return text;
+
+  try {
+    // 🔥 Handle all Chrome variants safely
+    if (typeof translator.translate === "function") {
+      return await translator.translate(text);
+    }
+
+    if (typeof translator.translateText === "function") {
+      return await translator.translateText(text);
+    }
+
+    if (typeof translator.process === "function") {
+      return await translator.process(text);
+    }
+
+    console.warn("No valid translate method found");
+    return text;
+  } catch (e) {
+    console.error("Translation error:", e);
+    return text;
+  }
+};
+
+
+  const waitUntilReady = () =>
+  new Promise<void>((resolve) => {
+    const interval = setInterval(() => {
+      if (status === "ready") {
+        clearInterval(interval);
+        resolve();
+      }
+    }, 50);
+  });
+
+
   const resetTranslator = useCallback(() => {
     if (translator && typeof translator.destroy === 'function') {
       try { translator.destroy(); } catch(e) { console.warn(e); }
@@ -60,5 +99,5 @@ export const useChromeTranslator = () => {
     setStatus('idle');
   }, [translator]);
 
-  return { translator, initTranslator, status, resetTranslator };
+  return { translator, initTranslator, status, resetTranslator, translateText ,waitUntilReady};
 };

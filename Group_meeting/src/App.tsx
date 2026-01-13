@@ -1,116 +1,19 @@
-import { useState, useEffect } from "react";
-import "@livekit/components-styles";
-import {
-  LiveKitRoom,
-  ControlBar,
-  RoomAudioRenderer,
-  useLocalParticipant,
-  useRoomContext,
-} from "@livekit/components-react";
-import { Stage } from "./components/Stage";
-import { Captions } from "./components/Captions";
-import { JoinScreen } from "./pages/JoinScreen";
-import { TranslationControls } from "./components/TranslationControls";
-import { useSpeechToText } from "./hooks/useSpeechToText";
-import { useChromeTranslator } from "./hooks/useChromeTranslator";
+import {  BrowserRouter, Route, Routes } from "react-router-dom";
+import MeetingPage from "./pages/MeetingPage";
+import Dashboard from "./pages/Dashboard";
+import MeetingHistory from "./pages/MeetingHistory";
 
-const LIVEKIT_URL = "wss://real-time-translation-0uoocd93.livekit.cloud";
-
-function ActiveRoom({ onLeave }: { onLeave: () => void }) {
-  const room = useRoomContext();
-  
-  // 1. Get Mic Status to auto-pause AI
-  const { localParticipant, isMicrophoneEnabled } = useLocalParticipant();
-
-  // Language States
-  const [myLang, setMyLang] = useState("");
-  const [targetLang, setTargetLang] = useState("ja");
-
-  // Master "AI ON/OFF" Switch (User preference)
-  const [isSttOn, setIsSttOn] = useState(false);
-
-  const { translator, initTranslator, status, resetTranslator } = useChromeTranslator();
-
-  useEffect(() => {
-    if (status === "ready") {
-      resetTranslator();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [targetLang]);
-
-  // 2. LOGIC: Only listen if "AI is On" AND "Mic is Unmuted"
-  const shouldActuallyListen = isSttOn && isMicrophoneEnabled;
-
-  // 3. Destructure the local text from the hook
-  const { localTranscript } = useSpeechToText(
-    room, 
-    localParticipant, 
-    shouldActuallyListen, // Use the smart check here
-    myLang
-  );
-
-  const handleInit = () => {
-    const source = targetLang === "ja" ? "en" : "ja";
-    const target = targetLang;
-    initTranslator(source, target);
-  };
-
-  return (
-    <div className="h-screen w-screen bg-black flex flex-col relative overflow-hidden">
-      <TranslationControls
-        myLang={myLang}
-        setMyLang={setMyLang}
-        targetLang={targetLang}
-        setTargetLang={setTargetLang}
-        onInit={handleInit}
-        status={status}
-        isSttOn={isSttOn}
-        toggleStt={() => setIsSttOn(!isSttOn)}
-      />
-
-      <div className="flex-1 relative overflow-hidden flex flex-col">
-        <Stage />
-         
-        <Captions
-          translator={translator}
-          isReady={status === "ready"}
-          localTranscript={localTranscript} // ✅ Now this variable exists!
-        />
-      </div>
-
-      <div className="h-16 bg-neutral-900 border-t border-neutral-800 flex justify-center items-center px-4 z-50">
-        <ControlBar
-          variation="minimal"
-          controls={{
-            microphone: true,
-            camera: true,
-            screenShare: true,
-            leave: true,
-          }}
-          // @ts-ignore
-          onLeave={onLeave}
-        />
-      </div>
-      <RoomAudioRenderer />
-    </div>
-  );
-}
 
 export default function App() {
-  const [token, setToken] = useState("");
-
-  if (!token) return <JoinScreen onJoin={setToken} />;
-
   return (
-    <LiveKitRoom
-      video={true}
-      audio={true}
-      token={token}
-      serverUrl={LIVEKIT_URL}
-      data-lk-theme="default"
-      onDisconnected={() => setToken("")}
-    >
-      <ActiveRoom onLeave={() => setToken("")} />
-    </LiveKitRoom>
+    <>
+    <BrowserRouter>
+      <Routes>
+        <Route path="/" element={<Dashboard />} />
+        <Route path="/meeting" element={<MeetingPage />} />
+        <Route path="/meeting-history" element={<MeetingHistory />} />
+      </Routes>
+    </BrowserRouter>
+    </>
   );
 }

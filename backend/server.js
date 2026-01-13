@@ -1,62 +1,86 @@
-import express from 'express';
-import cors from 'cors';
-import { AccessToken } from 'livekit-server-sdk';
-import dotenv from 'dotenv';
+import express from "express";
+import cors from "cors";
+import dotenv from "dotenv";
+import mongoose from "mongoose";
+import { AccessToken } from "livekit-server-sdk";
+
+import transcriptRoutes from "./routes/transcript.routes.js";
+import livekitWebhook from "./webhooks/livekit.js";
+import userRouter from "./routes/userRoute.js";
+import meetingRoutes from "./routes/meeting.routes.js";
 
 dotenv.config();
 
 const app = express();
+
+/* =======================
+   CORS (FIXED FOR NGROK)
+======================= */
+const allowedOrigins = [
+  "http://localhost:5173",
+  "http://localhost:3000",
+  "https://cortez-dineric-superurgently.ngrok-free.dev",
+];
+
 app.use(cors());
+
+
+// // ✅ SAFE preflight handler (NO "*")
+// app.use((req, res, next) => {
+//   if (req.method === "OPTIONS") {
+//     return res.sendStatus(204);
+//   }
+//   next();
+// });
+
+// app.options("*", cors());
+
+/* =======================
+   JSON Parsing
+======================= */
 app.use(express.json());
+app.use(express.json({ type: "application/webhook+json" }));
 
-app.post('/getToken', async (req, res) => {
+/* =======================
+   MongoDB
+======================= */
+mongoose.connect(process.env.MONGO_URI)
+  .then(() => console.log("MongoDB connected"))
+  .catch(err => console.error("Mongo error", err));
+
+/* =======================
+   LiveKit Token
+======================= */
+app.post("/getToken", async (req, res) => {
   const { roomName, participantName } = req.body;
-  
-  if (!roomName || !participantName) {
-    return res.status(400).json({ error: 'Missing roomName or participantName' });
-  }
 
-  try {
-    // 1. Log BEFORE creating the object
-    console.log(`Using API Key: ${process.env.LIVEKIT_API_KEY}`);
-    console.log(`Using API Secret: ${process.env.LIVEKIT_API_SECRET}`);
+  const at = new AccessToken(
+    process.env.LIVEKIT_API_KEY,
+    process.env.LIVEKIT_API_SECRET,
+    { identity: participantName, ttl: "24h" }
+  );
 
-    // 2. Create AccessToken with correct arguments (key, secret, options)
-    const at = new AccessToken(
-      process.env.LIVEKIT_API_KEY,
-      process.env.LIVEKIT_API_SECRET,
-      {
-        identity: participantName,
-        ttl: '24h',
-      }
-    );
+  at.addGrant({
+    roomJoin: true,
+    room: roomName,
+    canPublish: true,
+    canSubscribe: true,
+    canPublishData: true
+  });
 
-    console.log('AccessToken created successfully');
-
-    at.addGrant({
-      roomJoin: true,
-      room: roomName,
-      canPublish: true,
-      canSubscribe: true,
-      canPublishData: true,
-    });
-
-    console.log('Grants added to AccessToken');
-
-    const token = await at.toJwt();
-    
-    console.log(`Generated token for ${participantName}`);
-    console.log(`Token: ${token}`);
-    
-    res.json({ token });
-
-  } catch (e) {
-    console.error("Error generating token:", e); // Log error to terminal so you can see it
-    res.status(500).json({ error: e.message });
-  }
+  const token = await at.toJwt();
+  res.json({ token });
 });
 
+/* =======================
+   APIs
+======================= */
+app.use("/api/transcript", transcriptRoutes);
+app.use("/webhook/livekit", livekitWebhook);
+app.use("/api/meetings", meetingRoutes);
+app.use("/api/user", userRouter);
+
 app.listen(3000, () => {
-  console.log('Server running on port 3000');
-  console.log('Ensure your .env file has LIVEKIT_API_KEY and LIVEKIT_API_SECRET set correctly.');
+  console.log("Server running on port 3000");
+  console.log("Webhook endpoint: /webhook/livekit");
 });

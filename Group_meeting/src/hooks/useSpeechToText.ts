@@ -11,26 +11,21 @@ export const useSpeechToText = (
   shouldListen: boolean,
   langCode: string
 ) => {
-  // 1. STATE: Holds the "gray" interim text for your screen
   const [localTranscript, setLocalTranscript] = useState("");
-  
-  // Ref to track if we should really be listening (avoids closure staleness)
+  console.log(room.roomInfo?.sid);
+  localStorage.setItem("roomId", room.roomInfo?.sid || "");
   const isListeningRef = useRef(shouldListen);
-  
-  // Ref to hold the current interim text (needed for UtteranceEnd logic)
   const currentDraftRef = useRef(""); 
 
   useEffect(() => {
     isListeningRef.current = shouldListen;
-    // If we stop listening, clear any leftover local text
     if (!shouldListen) setLocalTranscript("");
   }, [shouldListen]);
 
   useEffect(() => {    
-    // Safety Checks
     if (!shouldListen) return;
-    if (!localParticipant) {
-      console.log("⚠️ STT: Waiting for LocalParticipant...");
+    if (!localParticipant || !room) {
+      console.log("⚠️ STT: Waiting for Room / LocalParticipant...");
       return;
     }
 
@@ -49,32 +44,48 @@ export const useSpeechToText = (
           return;
         }
 
-        // 2. CONFIGURATION: Nova-3 + Hybrid Strategy Params
         const baseUrl = 'wss://api.deepgram.com/v1/listen';
         const params = new URLSearchParams({
           model: 'nova-3',
           language: langCode.startsWith('ja') ? 'ja' : 'en',
           smart_format: 'true',
-          interim_results: 'true',   // Fast updates
-          utterance_end_ms: '1000',  // Force finalize if silence > 1s
-          vad_events: 'true'         // Voice Activity Detection
+          interim_results: 'true',
+          utterance_end_ms: '1000',
+          vad_events: 'true'
         });
 
         const url = `${baseUrl}?${params.toString()}`;
-
         socket = new WebSocket(url, ['token', DEEPGRAM_API_KEY]);
 
-        // Helper to publish text to LiveKit
-        const publishToRoom = (text: string) => {
-            if (!isListeningRef.current) return;
-            console.log(`📤 STT Final: "${text}"`);
-            
-            const payload = new TextEncoder().encode(JSON.stringify({
-              text: text,
-              srcLang: langCode.startsWith('ja') ? 'ja' : 'en'
-            }));
-            
-            localParticipant.publishData(payload, { reliable: true });
+        // 🔹 FINALIZED TEXT HANDLER (SINGLE SOURCE OF TRUTH)
+        const publishFinalText = async (text: string) => {
+          if (!isListeningRef.current) return;
+          if (!text.trim()) return;
+
+          console.log(`📤 STT Final: "${text}"`);
+
+          // 1️⃣ Publish to LiveKit (UNCHANGED)
+          const payload = new TextEncoder().encode(JSON.stringify({
+            text,
+            srcLang: langCode.startsWith('ja') ? 'ja' : 'en'
+          }));
+
+          localParticipant.publishData(payload, { reliable: true });
+
+          // 2️⃣ Persist to backend (NEW, NON-BLOCKING)
+          fetch("https://cortez-dineric-superurgently.ngrok-free.dev/api/transcript", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              meetingId: room.roomInfo?.sid,
+              participantId: localParticipant.sid,
+              participantName: localParticipant.identity,
+              originalText: text,
+              language: langCode
+            })
+          }).catch(err => {
+            console.error("❌ Transcript save failed:", err);
+          });
         };
 
         socket.onopen = () => {
@@ -88,39 +99,38 @@ export const useSpeechToText = (
             }
           });
 
-          recorder.start(250); // Smaller chunks for lower latency
+          recorder.start(250);
         };
 
         socket.onmessage = (event) => {
           try {
             const data = JSON.parse(event.data);
 
-            // A. Handle "UtteranceEnd" (User paused for 1s)
-            // If we have hanging text that wasn't marked final, send it now.
+            // A️⃣ Utterance end (forced finalize)
             if (data.type === 'UtteranceEnd') {
-                if (currentDraftRef.current) {
-                    publishToRoom(currentDraftRef.current);
-                    setLocalTranscript(""); // Clear local view
-                    currentDraftRef.current = "";
-                }
-                return;
+              if (currentDraftRef.current) {
+                publishFinalText(currentDraftRef.current);
+                setLocalTranscript("");
+                currentDraftRef.current = "";
+              }
+              return;
             }
 
             const transcript = data.channel?.alternatives?.[0]?.transcript;
             const isFinal = data.is_final;
 
-            if (transcript) {
-              // B. INTERIM RESULT (Gray Text)
-              if (!isFinal) {
-                setLocalTranscript(transcript);
-                currentDraftRef.current = transcript;
-              } 
-              // C. FINAL RESULT (Black Text -> Send to Room)
-              else {
-                publishToRoom(transcript);
-                setLocalTranscript(""); // Clear local view immediately
-                currentDraftRef.current = "";
-              }
+            if (!transcript) return;
+
+            // B️⃣ Interim (gray text)
+            if (!isFinal) {
+              setLocalTranscript(transcript);
+              currentDraftRef.current = transcript;
+            }
+            // C️⃣ Final (black text)
+            else {
+              publishFinalText(transcript);
+              setLocalTranscript("");
+              currentDraftRef.current = "";
             }
           } catch (err) {
             console.error("Error parsing socket message", err);
@@ -128,7 +138,9 @@ export const useSpeechToText = (
         };
 
         socket.onclose = (event) => {
-            if (event.code !== 1000) console.warn(`🔌 STT Closed: ${event.code}`);
+          if (event.code !== 1000) {
+            console.warn(`🔌 STT Closed: ${event.code}`);
+          }
         };
 
       } catch (error) {
@@ -142,10 +154,9 @@ export const useSpeechToText = (
       console.log("🛑 STT: Cleaning up...");
       if (recorder && recorder.state !== 'inactive') recorder.stop();
       if (socket) socket.close();
-      setLocalTranscript(""); // Reset UI on cleanup
+      setLocalTranscript("");
     };
-  }, [shouldListen, langCode, localParticipant]);
+  }, [shouldListen, langCode, localParticipant, room]);
 
-  // 3. RETURN: Pass the local text back to the UI
   return { localTranscript };
 };
