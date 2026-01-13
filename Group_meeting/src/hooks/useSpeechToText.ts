@@ -3,7 +3,7 @@ import type { Room, LocalParticipant } from 'livekit-client';
 import { Track } from 'livekit-client';
 
 // ⚠️ REPLACE THIS WITH YOUR REAL KEY
-const DEEPGRAM_API_KEY = "19b2a3f9d9be5a9092dff1810650198119a5d76b"; 
+const DEEPGRAM_API_KEY = ""; 
 
 export const useSpeechToText = (
   room: Room | undefined,
