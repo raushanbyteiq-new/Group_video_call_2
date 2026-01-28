@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
-import type { Room, LocalParticipant } from 'livekit-client';
-import { Track } from 'livekit-client';
+import { useEffect, useRef, useState } from "react";
+import type { Room, LocalParticipant } from "livekit-client";
+import { Track } from "livekit-client";
 
-// ⚠️ REPLACE THIS WITH YOUR REAL KEY
-const DEEPGRAM_API_KEY = ""; 
+// ⚠️ MOVE THIS TO .env IN REAL DEPLOYMENT
+const DEEPGRAM_API_KEY = "";
 
 export const useSpeechToText = (
   room: Room | undefined,
@@ -12,149 +12,201 @@ export const useSpeechToText = (
   langCode: string
 ) => {
   const [localTranscript, setLocalTranscript] = useState("");
-  console.log(room.roomInfo?.sid);
-  localStorage.setItem("roomId", room.roomInfo?.sid || "");
-  const isListeningRef = useRef(shouldListen);
-  const currentDraftRef = useRef(""); 
+
+  const isListeningRef = useRef(false);
+  const currentDraftRef = useRef("");
+
+  const socketRef = useRef<WebSocket | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const processorRef = useRef<ScriptProcessorNode | null>(null);
+  const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
 
   useEffect(() => {
     isListeningRef.current = shouldListen;
-    if (!shouldListen) setLocalTranscript("");
+    if (!shouldListen) {
+      setLocalTranscript("");
+      currentDraftRef.current = "";
+    }
   }, [shouldListen]);
 
-  useEffect(() => {    
+  useEffect(() => {
     if (!shouldListen) return;
-    if (!localParticipant || !room) {
-      console.log("⚠️ STT: Waiting for Room / LocalParticipant...");
+    if (!room || !localParticipant) return;
+
+    const microphonePub =
+      localParticipant.getTrackPublication(Track.Source.Microphone);
+    const audioTrack = microphonePub?.track?.mediaStreamTrack;
+
+    if (!audioTrack) {
+      console.warn("🎙️ STT: Microphone not available");
       return;
     }
 
-    console.log(`🚀 STT: Starting for language: ${langCode}`);
+    console.log("🚀 STT started");
 
-    let socket: WebSocket | null = null;
-    let recorder: MediaRecorder | null = null;
+    /* ============================
+       CONNECT TO DEEPGRAM
+    ============================ */
 
-    const startStreaming = async () => {
+    const params = new URLSearchParams({
+      model: "nova-3",
+      language: langCode.startsWith("ja") ? "ja" : "en",
+      interim_results: "true",
+      smart_format: "true",
+      utterance_end_ms: "1500",
+      vad_events: "true",
+      encoding: "linear16",
+      sample_rate: "16000",
+      channels: "1",
+    });
+
+    const socket = new WebSocket(
+      `wss://api.deepgram.com/v1/listen?${params.toString()}`,
+      ["token", DEEPGRAM_API_KEY]
+    );
+
+    socketRef.current = socket;
+
+    socket.onopen = () => {
+      console.log("✅ STT WebSocket connected");
+       console.log(room.roomInfo?.sid);
+
+      const audioContext = new AudioContext({ sampleRate: 16000 });
+      audioContextRef.current = audioContext;
+
+      const source = audioContext.createMediaStreamSource(
+        new MediaStream([audioTrack])
+      );
+      sourceRef.current = source;
+
+      const processor = audioContext.createScriptProcessor(4096, 1, 1);
+      processorRef.current = processor;
+
+      source.connect(processor);
+      processor.connect(audioContext.destination);
+
+      processor.onaudioprocess = (event) => {
+        if (!isListeningRef.current) return;
+        if (socket.readyState !== WebSocket.OPEN) return;
+
+        const input = event.inputBuffer.getChannelData(0);
+
+        const buffer = new ArrayBuffer(input.length * 2);
+        const view = new DataView(buffer);
+
+        let offset = 0;
+        for (let i = 0; i < input.length; i++, offset += 2) {
+          let sample = Math.max(-1, Math.min(1, input[i]));
+          view.setInt16(
+            offset,
+            sample < 0 ? sample * 0x8000 : sample * 0x7fff,
+            true
+          );
+        }
+
+        socket.send(buffer);
+      };
+    };
+
+    socket.onmessage = async (event) => {
       try {
-        const microphonePub = localParticipant.getTrackPublication(Track.Source.Microphone);
-        const audioTrack = microphonePub?.track?.mediaStreamTrack;
+        const data = JSON.parse(event.data);
 
-        if (!audioTrack) {
-          console.error("❌ STT: No Microphone Track found. Please unmute.");
+        if (data.type === "UtteranceEnd") {
+          if (currentDraftRef.current) {
+            await publishFinal(currentDraftRef.current);
+            currentDraftRef.current = "";
+            setLocalTranscript("");
+          }
           return;
         }
 
-        const baseUrl = 'wss://api.deepgram.com/v1/listen';
-        const params = new URLSearchParams({
-          model: 'nova-3',
-          language: langCode.startsWith('ja') ? 'ja' : 'en',
-          smart_format: 'true',
-          interim_results: 'true',
-          utterance_end_ms: '1000',
-          vad_events: 'true'
-        });
+        const transcript = data.channel?.alternatives?.[0]?.transcript;
+        if (!transcript) return;
 
-        const url = `${baseUrl}?${params.toString()}`;
-        socket = new WebSocket(url, ['token', DEEPGRAM_API_KEY]);
-
-        // 🔹 FINALIZED TEXT HANDLER (SINGLE SOURCE OF TRUTH)
-        const publishFinalText = async (text: string) => {
-          if (!isListeningRef.current) return;
-          if (!text.trim()) return;
-
-          console.log(`📤 STT Final: "${text}"`);
-
-          // 1️⃣ Publish to LiveKit (UNCHANGED)
-          const payload = new TextEncoder().encode(JSON.stringify({
-            text,
-            srcLang: langCode.startsWith('ja') ? 'ja' : 'en'
-          }));
-
-          localParticipant.publishData(payload, { reliable: true });
-
-          // 2️⃣ Persist to backend (NEW, NON-BLOCKING)
-          fetch("https://cortez-dineric-superurgently.ngrok-free.dev/api/transcript", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              meetingId: room.roomInfo?.sid,
-              participantId: localParticipant.sid,
-              participantName: localParticipant.identity,
-              originalText: text,
-              language: langCode
-            })
-          }).catch(err => {
-            console.error("❌ Transcript save failed:", err);
-          });
-        };
-
-        socket.onopen = () => {
-          console.log("✅ STT: WebSocket Connected!");
-          const stream = new MediaStream([audioTrack]);
-          recorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
-
-          recorder.addEventListener('dataavailable', (event) => {
-            if (event.data.size > 0 && socket?.readyState === 1) {
-              socket.send(event.data);
-            }
-          });
-
-          recorder.start(250);
-        };
-
-        socket.onmessage = (event) => {
-          try {
-            const data = JSON.parse(event.data);
-
-            // A️⃣ Utterance end (forced finalize)
-            if (data.type === 'UtteranceEnd') {
-              if (currentDraftRef.current) {
-                publishFinalText(currentDraftRef.current);
-                setLocalTranscript("");
-                currentDraftRef.current = "";
-              }
-              return;
-            }
-
-            const transcript = data.channel?.alternatives?.[0]?.transcript;
-            const isFinal = data.is_final;
-
-            if (!transcript) return;
-
-            // B️⃣ Interim (gray text)
-            if (!isFinal) {
-              setLocalTranscript(transcript);
-              currentDraftRef.current = transcript;
-            }
-            // C️⃣ Final (black text)
-            else {
-              publishFinalText(transcript);
-              setLocalTranscript("");
-              currentDraftRef.current = "";
-            }
-          } catch (err) {
-            console.error("Error parsing socket message", err);
-          }
-        };
-
-        socket.onclose = (event) => {
-          if (event.code !== 1000) {
-            console.warn(`🔌 STT Closed: ${event.code}`);
-          }
-        };
-
-      } catch (error) {
-        console.error("❌ STT Setup Exception:", error);
+        if (!data.is_final) {
+          currentDraftRef.current = transcript;
+          setLocalTranscript(transcript);
+        } else {
+          await publishFinal(transcript);
+          currentDraftRef.current = "";
+          setLocalTranscript("");
+        }
+      } catch (err) {
+        console.error("STT parse error", err);
       }
     };
 
-    startStreaming();
+    socket.onerror = (err) => {
+      console.error("STT socket error", err);
+    };
+
+    /* ============================
+       FINAL TEXT HANDLER
+    ============================ */
+
+    const publishFinal = async (text: string) => {
+      if (!text.trim()) return;
+      if (!isListeningRef.current) return;
+
+      console.log("📤 STT Final:", text);
+
+      // 1️⃣ Publish to LiveKit (captions / translation)
+      const payload = new TextEncoder().encode(
+        JSON.stringify({
+          text,
+          srcLang: langCode.startsWith("ja") ? "ja" : "en",
+        })
+      );
+
+      localParticipant.publishData(payload, { reliable: true });
+
+      // 2️⃣ Persist transcript (non-blocking)
+     
+      fetch(
+        "https://m0cq537v-3000.inc1.devtunnels.ms/api/transcript",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            meetingId: room.roomInfo?.sid,
+            participantId: localParticipant.sid,
+            participantName: localParticipant.identity,
+            originalText: text,
+            language: langCode,
+          }),
+        }
+      ).catch(() => {});
+    };
+
+    /* ============================
+       CLEANUP
+    ============================ */
 
     return () => {
-      console.log("🛑 STT: Cleaning up...");
-      if (recorder && recorder.state !== 'inactive') recorder.stop();
-      if (socket) socket.close();
+      console.log("🛑 STT cleanup");
+
+      isListeningRef.current = false;
+
+      processorRef.current?.disconnect();
+      sourceRef.current?.disconnect();
+
+      if (
+        audioContextRef.current &&
+        audioContextRef.current.state !== "closed"
+      ) {
+        audioContextRef.current.close();
+      }
+
+      socketRef.current?.close();
+
+      processorRef.current = null;
+      sourceRef.current = null;
+      audioContextRef.current = null;
+      socketRef.current = null;
+
       setLocalTranscript("");
+      currentDraftRef.current = "";
     };
   }, [shouldListen, langCode, localParticipant, room]);
 

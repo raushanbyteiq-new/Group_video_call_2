@@ -22,8 +22,13 @@ export const JoinScreen = ({ onJoin }: { onJoin: (token: string) => void }) => {
           }),
         }
       );
+      console.log("response", res);
       const data = await res.json();
+      // console.log("dfa"+data)
+      console.log("JOIN TOKEN", data.token);
+     
       onJoin(data.token);
+      console.log("room id",data.roomId);
     } catch {
       alert("Failed to join server");
     } finally {

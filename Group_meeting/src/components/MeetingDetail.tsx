@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import type { Meeting } from "../types/meeting";
 
 
-const API_BASE = "http://localhost:3000";
+const API_BASE = "https://m0cq537v-3000.inc1.devtunnels.ms";
 
 interface Props {
   meetingId: string;

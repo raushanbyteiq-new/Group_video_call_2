@@ -32,7 +32,7 @@ router.get("/", async (req, res) => {
   const meetings = await Meeting.find({})
     .sort({ endedAt: -1 })
     .select("meetingId roomName startedAt endedAt  participants summary");
-  console.log("Fetched meetings:", meetings);
+  // console.log("Fetched meetings:", meetings);
   res.json(meetings);
 });
 

@@ -1,0 +1,13 @@
+fastapi
+uvicorn
+
+langchain==0.2.14
+langchain-community==0.2.12
+langchain-google-genai==1.0.9
+langchain-mongodb==0.1.6
+langchain-huggingface==0.0.3
+
+pymongo==4.8.0
+python-dotenv==1.0.1
+pydantic==2.8.2
+pydantic-settings==2.3.4

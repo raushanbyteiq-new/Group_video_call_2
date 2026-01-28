@@ -1,7 +1,7 @@
 import express from "express";
 import Meeting from "../models/Meeting.js";
 import { summarizeMeeting } from "../services/summarize.js";
-
+import { ingestChunk } from "../rag/ingestion/embedChunk.js";
 const router = express.Router();
 
 router.post("/", async (req, res) => {
@@ -30,18 +30,18 @@ router.post("/", async (req, res) => {
           roomName: room.name,
           startedAt: new Date(),
           isActive: true,
-          summarized: false
+          summarized: false,
         },
         $inc: { participantCount: 1 },
         $push: {
           participants: {
             participantId: participant.sid,
             name: participant.identity,
-            joinedAt: new Date()
-          }
-        }
+            joinedAt: new Date(),
+          },
+        },
       },
-      { upsert: true }
+      { upsert: true },
     );
 
     console.log("👤 Participant joined:", participant.identity);
@@ -70,6 +70,10 @@ router.post("/", async (req, res) => {
       meeting.isActive = false;
       meeting.endedAt = new Date();
       meeting.summarized = true;
+      const finalChunk = flushBuffer(meetingId);
+      if (finalChunk) {
+        ingestChunk(meetingId, finalChunk);
+      }
       await meeting.save();
 
       await summarizeMeeting(room.sid);

@@ -29,7 +29,7 @@ export default function TranscriptModal({ meetingId, onClose }: Props) {
   ============================= */
   useEffect(() => {
     const meetingId = localStorage.getItem("roomId") || "";
-    fetch(`http://localhost:3000/api/transcript/recent/${meetingId}`)
+    fetch(`https://m0cq537v-3000.inc1.devtunnels.ms/api/transcript/recent/${meetingId}`)
       .then(res => res.json())
       .then(data => setRawMessages(data))
       .finally(() => setLoading(false));
@@ -80,16 +80,16 @@ export default function TranscriptModal({ meetingId, onClose }: Props) {
         </button>
 
         {/* HEADER */}
-        <div className="p-4 border-b">
-          <h2 className="text-lg font-semibold">
+        <div className=" pt-4 pl-4 border-b">
+          <h2 className="text-lg font-bold text-gray-900">
             Last 10 Minutes Chat
           </h2>
         </div>
 
         {/* LANGUAGE SELECTION */}
         {!showChat && (
-          <div className="p-4 border-b space-y-3">
-            <div className="text-sm font-medium">
+          <div className="p-4 border-b space-y-1">
+            <div className="text-sm font-2xl text-black font-bold font-medium">
               Show chat in:
             </div>
 
@@ -98,8 +98,8 @@ export default function TranscriptModal({ meetingId, onClose }: Props) {
                 onClick={() => setSelectedLang("en")}
                 className={`px-3 py-1.5 rounded border ${
                   selectedLang === "en"
-                    ? "bg-black text-white"
-                    : "bg-white border-gray-400"
+                    ? "bg-red-500 text-white"
+                    : "bg-white text-red-500 font-bold border-gray-400"
                 }`}
               >
                 English
@@ -109,8 +109,8 @@ export default function TranscriptModal({ meetingId, onClose }: Props) {
                 onClick={() => setSelectedLang("ja")}
                 className={`px-3 py-1.5 rounded border ${
                   selectedLang === "ja"
-                    ? "bg-black text-white"
-                    : "bg-white border-gray-400"
+                   ? "bg-red-500 text-white"
+                    : "bg-white text-red-500 font-bold border-gray-400"
                 }`}
               >
                 Japanese
